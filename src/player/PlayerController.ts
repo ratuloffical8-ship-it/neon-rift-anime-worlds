@@ -23,13 +23,67 @@ export interface PlayerInput {
 export type PlayerState = 'idle' | 'walk' | 'run' | 'sprint' | 'jump';
 
 /**
+ * TEMPORARY procedural character, used until a real .glb is available.
+ * Exported so the asset loader can register it as the fallback model.
+ */
+export function createTemporaryPlayerModel(): THREE.Group {
+  const model = new THREE.Group();
+
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.35, 0.8, 4, 12),
+    new THREE.MeshStandardMaterial({ color: 0x7c3aed, roughness: 0.6 }),
+  );
+  body.position.y = 0.75;
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.28, 16, 12),
+    new THREE.MeshStandardMaterial({ color: 0xffd9c0, roughness: 0.7 }),
+  );
+  head.position.y = 1.55;
+
+  // Cyan marker shows the facing direction (+Z).
+  const nose = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.12, 0.3),
+    new THREE.MeshStandardMaterial({
+      color: 0x00e5ff,
+      emissive: 0x00e5ff,
+      emissiveIntensity: 0.6,
+    }),
+  );
+  nose.position.set(0, 1.55, 0.3);
+
+  model.add(body, head, nose);
+  model.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) obj.castShadow = true;
+  });
+  return model;
+}
+
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    mesh.geometry?.dispose();
+    const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(material)) material.forEach((m) => m.dispose());
+    else material?.dispose();
+  });
+}
+
+/**
  * Third-person character movement.
- * The visual is a TEMPORARY procedural model. It will be replaced by a
- * .glb character through the asset pipeline (Phase 4/5).
+ * The visible model can be swapped with setModel() (temporary model or a
+ * rigged .glb with animation clips named idle / walk / run / jump).
  */
 export class PlayerController {
   readonly object = new THREE.Group();
   state: PlayerState = 'idle';
+
+  private readonly visual = new THREE.Group();
+  private mixer: THREE.AnimationMixer | null = null;
+  private readonly actions = new Map<string, THREE.AnimationAction>();
+  private currentAction: THREE.AnimationAction | null = null;
+  private currentModel: THREE.Object3D | null = null;
+  private ownsModel = false;
 
   private velocityY = 0;
   private grounded = true;
@@ -41,7 +95,8 @@ export class PlayerController {
   constructor(spawn: THREE.Vector3 = new THREE.Vector3(0, CONFIG.world.groundY, 8)) {
     this.object.position.copy(spawn);
     this.object.rotation.y = this.facing;
-    this.buildTemporaryModel();
+    this.object.add(this.visual);
+    this.setModel(createTemporaryPlayerModel(), [], true);
   }
 
   get position(): THREE.Vector3 {
@@ -50,6 +105,39 @@ export class PlayerController {
 
   setColliders(colliders: CircleCollider[]): void {
     this.colliders = colliders;
+  }
+
+  /**
+   * Replaces the visible model.
+   * @param owned true if this controller may dispose the old model's resources
+   *              (never true for models cloned from the asset cache).
+   */
+  setModel(
+    model: THREE.Object3D,
+    animations: readonly THREE.AnimationClip[] = [],
+    owned = false,
+  ): void {
+    this.mixer?.stopAllAction();
+    this.mixer = null;
+    this.actions.clear();
+    this.currentAction = null;
+
+    if (this.currentModel) {
+      this.visual.remove(this.currentModel);
+      if (this.ownsModel) disposeObject(this.currentModel);
+    }
+
+    this.currentModel = model;
+    this.ownsModel = owned;
+    this.visual.add(model);
+
+    if (animations.length > 0) {
+      this.mixer = new THREE.AnimationMixer(model);
+      for (const clip of animations) {
+        this.actions.set(clip.name.toLowerCase(), this.mixer.clipAction(clip));
+      }
+      this.playStateAnimation();
+    }
   }
 
   update(dt: number, input: PlayerInput): void {
@@ -103,6 +191,22 @@ export class PlayerController {
 
     this.resolveCollisions();
     this.object.rotation.y = this.facing;
+
+    this.playStateAnimation();
+    this.mixer?.update(dt);
+  }
+
+  /** Cross-fades to the clip matching the current state (if the model has clips). */
+  private playStateAnimation(): void {
+    if (this.actions.size === 0) return;
+
+    const wanted = this.state === 'sprint' && !this.actions.has('sprint') ? 'run' : this.state;
+    const next = this.actions.get(wanted) ?? this.actions.get('idle') ?? null;
+    if (!next || next === this.currentAction) return;
+
+    next.reset().play();
+    if (this.currentAction) this.currentAction.crossFadeTo(next, 0.2, false);
+    this.currentAction = next;
   }
 
   private resolveCollisions(): void {
@@ -134,33 +238,6 @@ export class PlayerController {
       pos.z = (pos.z / r) * this.boundaryRadius;
     }
   }
-
-  private buildTemporaryModel(): void {
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.35, 0.8, 4, 12),
-      new THREE.MeshStandardMaterial({ color: 0x7c3aed, roughness: 0.6 }),
-    );
-    body.position.y = 0.75;
-
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.28, 16, 12),
-      new THREE.MeshStandardMaterial({ color: 0xffd9c0, roughness: 0.7 }),
-    );
-    head.position.y = 1.55;
-
-    // Cyan marker shows the facing direction (+Z).
-    const nose = new THREE.Mesh(
-      new THREE.BoxGeometry(0.12, 0.12, 0.3),
-      new THREE.MeshStandardMaterial({
-        color: 0x00e5ff,
-        emissive: 0x00e5ff,
-        emissiveIntensity: 0.6,
-      }),
-    );
-    nose.position.set(0, 1.55, 0.3);
-
-    this.object.add(body, head, nose);
-  }
 }
 
 /** Smallest signed difference between two angles, in (-PI, PI]. */
@@ -170,4 +247,4 @@ function shortestAngle(from: number, to: number): number {
   if (d > Math.PI) d -= twoPi;
   if (d < -Math.PI) d += twoPi;
   return d;
-      }
+}
