@@ -2,8 +2,10 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config';
 import type { CircleCollider } from '../player/PlayerController';
+import { applyDuskLighting, createSky } from './Lighting';
 import { createBridge } from './props/Bridge';
 import { createRiver } from './props/River';
+import { createTorii, toriiColliders } from './props/Torii';
 import { createTree, treeColliderRadius } from './props/Tree';
 import type { TreeKind } from './props/Tree';
 
@@ -22,6 +24,7 @@ const TREE_COUNT = 40;
 const RIVER_Z = 22;
 const RIVER_WIDTH = 4;
 const BRIDGE_WIDTH = 3.2;
+const TORII_WIDTH = 6;
 
 /** Small deterministic random generator so the world looks the same every time. */
 function mulberry32(seed: number): () => number {
@@ -90,13 +93,19 @@ function createHouse(
 
 /**
  * Builds the first explorable zone: grass, a main path, a plaza with the
- * Rift Crystal, six houses, lantern posts, a river with a bridge and forest.
+ * Rift Crystal, six houses, lantern posts, torii gates, a river with a bridge, dusk sky and forest.
  * Everything is real 3D geometry (temporary procedural art).
  */
 export function buildFirstZone(): ZoneResult {
   const group = new THREE.Group();
   const colliders: CircleCollider[] = [];
   const groundY = CONFIG.world.groundY;
+
+  // Dusk sky. Lights and fog switch to the dusk look when the zone joins a scene.
+  group.add(createSky());
+  group.addEventListener('added', () => {
+    if (group.parent instanceof THREE.Scene) applyDuskLighting(group.parent);
+  });
 
   // Grass
   const grass = new THREE.Mesh(
@@ -189,6 +198,14 @@ export function buildFirstZone(): ZoneResult {
       group.add(post, lantern);
       colliders.push({ x, z, radius: 0.2, height: 2.4 });
     }
+  }
+
+  // Torii gates at both ends of the main path
+  for (const z of [-32, 33]) {
+    const gate = createTorii(TORII_WIDTH, groundY);
+    gate.position.set(0, 0, z);
+    group.add(gate);
+    colliders.push(...toriiColliders(0, z, TORII_WIDTH));
   }
 
   // River with a bridge where the main path crosses it
