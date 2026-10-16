@@ -4,7 +4,10 @@ import { CONFIG } from '../core/Config';
 import type { CircleCollider } from '../player/PlayerController';
 import { applyDuskLighting, createSky } from './Lighting';
 import { createBridge } from './props/Bridge';
+import { createFlowers } from './props/Flowers';
+import type { FlowerPoint } from './props/Flowers';
 import { createRiver } from './props/River';
+import { createRock, ROCK_VARIANTS, rockColliderRadius, rockHeight } from './props/Rock';
 import { createTorii, toriiColliders } from './props/Torii';
 import { createTree, treeColliderRadius } from './props/Tree';
 import type { TreeKind } from './props/Tree';
@@ -25,6 +28,9 @@ const RIVER_Z = 22;
 const RIVER_WIDTH = 4;
 const BRIDGE_WIDTH = 3.2;
 const TORII_WIDTH = 6;
+const ROCK_COUNT = 14;
+const FLOWER_CLUSTERS = 10;
+const FLOWERS_PER_CLUSTER = 18;
 
 /** Small deterministic random generator so the world looks the same every time. */
 function mulberry32(seed: number): () => number {
@@ -93,7 +99,7 @@ function createHouse(
 
 /**
  * Builds the first explorable zone: grass, a main path, a plaza with the
- * Rift Crystal, six houses, lantern posts, torii gates, a river with a bridge, dusk sky and forest.
+ * Rift Crystal, six houses, lantern posts, torii gates, a river with a bridge, dusk sky, forest, rocks and flowers.
  * Everything is real 3D geometry (temporary procedural art).
  */
 export function buildFirstZone(): ZoneResult {
@@ -231,6 +237,34 @@ export function buildFirstZone(): ZoneResult {
   // Forest: random placement that avoids the path, plaza, houses and other trees
   const random = mulberry32(20261016);
   const maxRadius = CONFIG.world.firstZoneHalfSize - 3;
+  // Rocks (small ones can be jumped over)
+  let rocksPlaced = 0;
+  for (let attempt = 0; attempt < 400 && rocksPlaced < ROCK_COUNT; attempt += 1) {
+    const angle = random() * Math.PI * 2;
+    const distance = 8 + random() * (maxRadius - 8);
+    const x = Math.cos(angle) * distance;
+    const z = Math.sin(angle) * distance;
+    const scale = 0.6 + random() * 1.0;
+    const radius = rockColliderRadius(scale);
+
+    if (Math.abs(x) < PATH_HALF_WIDTH + 1.5) continue;
+    if (Math.hypot(x, z) < PLAZA_RADIUS + 2) continue;
+    if (Math.abs(z - RIVER_Z) < RIVER_WIDTH / 2 + 1.2) continue;
+    const blockedByRock = colliders.some(
+      (c) => Math.hypot(x - c.x, z - c.z) < c.radius + radius + 0.8,
+    );
+    if (blockedByRock) continue;
+
+    const rock = createRock(scale, Math.floor(random() * ROCK_VARIANTS));
+    rock.position.x = x;
+    rock.position.z = z;
+    rock.position.y += groundY;
+    rock.rotation.y = random() * Math.PI * 2;
+    group.add(rock);
+    colliders.push({ x, z, radius, height: rockHeight(scale) });
+    rocksPlaced += 1;
+  }
+
   let placed = 0;
   for (let attempt = 0; attempt < 600 && placed < TREE_COUNT; attempt += 1) {
     const angle = random() * Math.PI * 2;
@@ -257,6 +291,38 @@ export function buildFirstZone(): ZoneResult {
     placed += 1;
   }
 
+  // Flower clusters (decoration only, placed after everything solid)
+  const flowerPoints: FlowerPoint[] = [];
+  let clusters = 0;
+  for (let attempt = 0; attempt < 200 && clusters < FLOWER_CLUSTERS; attempt += 1) {
+    const angle = random() * Math.PI * 2;
+    const distance = 8 + random() * (maxRadius - 8);
+    const cx = Math.cos(angle) * distance;
+    const cz = Math.sin(angle) * distance;
+    if (Math.abs(cx) < PATH_HALF_WIDTH + 1) continue;
+    if (Math.abs(cz - RIVER_Z) < RIVER_WIDTH / 2 + 2) continue;
+    clusters += 1;
+
+    for (let i = 0; i < FLOWERS_PER_CLUSTER; i += 1) {
+      const a = random() * Math.PI * 2;
+      const r = 2.5 * Math.sqrt(random());
+      const fx = cx + Math.cos(a) * r;
+      const fz = cz + Math.sin(a) * r;
+
+      if (Math.hypot(fx, fz) > maxRadius + 1) continue;
+      if (Math.abs(fx) < PATH_HALF_WIDTH + 0.3) continue;
+      if (Math.hypot(fx, fz) < PLAZA_RADIUS + 0.5) continue;
+      if (Math.abs(fz - RIVER_Z) < RIVER_WIDTH / 2 + 0.6) continue;
+      const insideSolid = colliders.some(
+        (c) => Math.hypot(fx - c.x, fz - c.z) < c.radius + 0.3,
+      );
+      if (insideSolid) continue;
+
+      flowerPoints.push({ x: fx, z: fz });
+    }
+  }
+  group.add(createFlowers(flowerPoints, groundY, random));
+
   let time = 0;
   const update = (dt: number): void => {
     time += dt;
@@ -267,4 +333,4 @@ export function buildFirstZone(): ZoneResult {
   };
 
   return { group, colliders, update };
-}
+      }
