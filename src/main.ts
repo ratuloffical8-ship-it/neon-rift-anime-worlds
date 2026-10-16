@@ -1,32 +1,26 @@
 // src/main.ts
-import * as THREE from 'three';
+import { AssetLoader } from './assets/AssetLoader';
 import { Engine } from './core/Engine';
 import { Input } from './core/Input';
-import { PlayerController } from './player/PlayerController';
+import { createTemporaryPlayerModel, PlayerController } from './player/PlayerController';
 import { ThirdPersonCamera } from './player/ThirdPersonCamera';
+import { LoadingScreen } from './ui/LoadingScreen';
 import { MobileControls } from './ui/MobileControls';
 import { buildFirstZone } from './world/Zone';
 
 const container = document.getElementById('app') as HTMLDivElement | null;
-const loadingEl = document.getElementById('loading');
-const errorEl = document.getElementById('error');
-
 if (!container) {
   throw new Error('#app container not found in index.html');
 }
 
-function showError(message: string): void {
-  if (errorEl) {
-    errorEl.textContent = message;
-    errorEl.style.display = 'block';
-  }
-}
+const loadingScreen = new LoadingScreen();
+loadingScreen.setMessage('Starting...');
 
 let engine: Engine;
 try {
   engine = new Engine(container);
 } catch (err) {
-  showError('Your browser or device could not start 3D graphics (WebGL).');
+  loadingScreen.showError('Your browser or device could not start 3D graphics (WebGL).');
   throw err;
 }
 
@@ -50,12 +44,9 @@ engine.sunLight.shadow.normalBias = 0.05;
 const zone = buildFirstZone();
 scene.add(zone.group);
 
-// Player and camera
+// Player (temporary model until a real .glb is loaded)
 const player = new PlayerController();
 player.setColliders(zone.colliders);
-player.object.traverse((obj) => {
-  if (obj instanceof THREE.Mesh) obj.castShadow = true;
-});
 scene.add(player.object);
 
 const followCamera = new ThirdPersonCamera(camera);
@@ -76,11 +67,36 @@ engine.onUpdate((dt) => {
   followCamera.update(dt, player.position, look, zoom, zone.colliders);
 });
 
-engine.start();
-loadingEl?.classList.add('hidden');
+// Assets
+const loader = new AssetLoader();
+loader.registerFallback('player_default', createTemporaryPlayerModel);
+loadingScreen.bind(loader);
+
+async function start(): Promise<void> {
+  await loader.preload(['player_default']);
+
+  const instance = loader.createInstance('player_default');
+  if (instance && !instance.isFallback) {
+    player.setModel(instance.object, instance.animations);
+  }
+
+  const missing = loader.getMissing();
+  if (missing.length > 0) {
+    console.info(`[assets] Using temporary models for: ${missing.join(', ')}`);
+  }
+
+  engine.start();
+  loadingScreen.hide();
+}
+
+start().catch((err) => {
+  console.error(err);
+  loadingScreen.showError('Something went wrong while loading the game.');
+});
 
 window.addEventListener('beforeunload', () => {
   mobileControls?.dispose();
   input.dispose();
+  loader.dispose();
   engine.dispose();
 });
