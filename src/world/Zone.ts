@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { CONFIG } from '../core/Config';
 import type { CircleCollider } from '../player/PlayerController';
+import { createBridge } from './props/Bridge';
+import { createRiver } from './props/River';
 import { createTree, treeColliderRadius } from './props/Tree';
 import type { TreeKind } from './props/Tree';
 
@@ -17,6 +19,9 @@ const WALL_HEIGHT = 3;
 const PATH_HALF_WIDTH = 2.2;
 const PLAZA_RADIUS = 5;
 const TREE_COUNT = 40;
+const RIVER_Z = 22;
+const RIVER_WIDTH = 4;
+const BRIDGE_WIDTH = 3.2;
 
 /** Small deterministic random generator so the world looks the same every time. */
 function mulberry32(seed: number): () => number {
@@ -85,7 +90,7 @@ function createHouse(
 
 /**
  * Builds the first explorable zone: grass, a main path, a plaza with the
- * Rift Crystal, six houses, lantern posts and forest.
+ * Rift Crystal, six houses, lantern posts, a river with a bridge and forest.
  * Everything is real 3D geometry (temporary procedural art).
  */
 export function buildFirstZone(): ZoneResult {
@@ -186,6 +191,26 @@ export function buildFirstZone(): ZoneResult {
     }
   }
 
+  // River with a bridge where the main path crosses it
+  const zoneHalf = CONFIG.world.firstZoneHalfSize;
+  const river = createRiver({
+    z: RIVER_Z,
+    width: RIVER_WIDTH,
+    length: 2 * Math.sqrt(zoneHalf * zoneHalf - RIVER_Z * RIVER_Z) - 0.5,
+    groundY,
+    gapHalfWidth: BRIDGE_WIDTH / 2,
+  });
+  group.add(river.group);
+  colliders.push(...river.colliders);
+
+  const bridge = createBridge({
+    width: BRIDGE_WIDTH,
+    length: RIVER_WIDTH + 2.4,
+    groundY,
+  });
+  bridge.position.set(0, 0, RIVER_Z);
+  group.add(bridge);
+
   // Forest: random placement that avoids the path, plaza, houses and other trees
   const random = mulberry32(20261016);
   const maxRadius = CONFIG.world.firstZoneHalfSize - 3;
@@ -200,6 +225,7 @@ export function buildFirstZone(): ZoneResult {
 
     if (Math.abs(x) < PATH_HALF_WIDTH + 1.5) continue;
     if (Math.hypot(x, z) < PLAZA_RADIUS + 2) continue;
+    if (Math.abs(z - RIVER_Z) < RIVER_WIDTH / 2 + 3) continue;
     const blocked = colliders.some(
       (c) => Math.hypot(x - c.x, z - c.z) < c.radius + radius + 1.2,
     );
@@ -217,10 +243,11 @@ export function buildFirstZone(): ZoneResult {
   let time = 0;
   const update = (dt: number): void => {
     time += dt;
+    river.update(dt);
     crystal.rotation.y += dt * 0.8;
     crystal.rotation.x += dt * 0.3;
     crystal.position.y = 2 + Math.sin(time * 1.5) * 0.15;
   };
 
   return { group, colliders, update };
-  }
+}
