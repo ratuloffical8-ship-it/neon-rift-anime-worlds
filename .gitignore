@@ -1,0 +1,24 @@
+# .gitignore
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# Environment files (keep only the example)
+.env
+.env.*
+!.env.example
+
+# Firebase / Google private credentials (must never be committed)
+serviceAccount*.json
+*-firebase-adminsdk-*.json
+service-account*.json
+
+# Logs and OS/editor files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.local
