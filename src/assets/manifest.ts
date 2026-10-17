@@ -1,4 +1,5 @@
 // src/assets/manifest.ts
+import { CHARACTER_ASSET_ENTRIES } from '../characters/catalog';
 
 export type AssetType =
   | 'character'
@@ -31,12 +32,8 @@ export interface AssetEntry {
 
 const LICENSE_PENDING = 'Original asset. Record the license/source when the file is added.';
 
-/**
- * Every .glb/.gltf the game may load. These files do NOT exist yet.
- * The loader reports missing files and the game uses temporary procedural
- * models until a real file is placed at the listed path.
- */
-export const ASSET_MANIFEST: readonly AssetEntry[] = [
+/** Hand-written entries. The 20 character entries are generated from the catalog. */
+const BASE_ENTRIES: readonly AssetEntry[] = [
   {
     id: 'player_default',
     path: 'assets/characters/player_default.glb',
@@ -73,6 +70,16 @@ export const ASSET_MANIFEST: readonly AssetEntry[] = [
     quality: 'temporary',
     license: LICENSE_PENDING,
   },
+];
+
+/**
+ * Every .glb/.gltf the game may load. These files do NOT exist yet.
+ * The loader reports missing files and the game uses temporary procedural
+ * models until a real file is placed at the listed path.
+ */
+export const ASSET_MANIFEST: readonly AssetEntry[] = [
+  ...BASE_ENTRIES,
+  ...CHARACTER_ASSET_ENTRIES,
 ];
 
 /** Builds a stable URL that also works after deployment (relative base). */
