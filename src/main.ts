@@ -1,6 +1,6 @@
 // src/main.ts
 import { AssetLoader } from './assets/AssetLoader';
-import { getCharacter } from './characters/catalog';
+import { getCharacter, validateCatalog } from './characters/catalog';
 import { createPlaceholderCharacter } from './characters/CharacterPreview';
 import { LocalOwnershipStore } from './characters/ownership';
 import { Engine } from './core/Engine';
@@ -27,6 +27,13 @@ try {
 } catch (err) {
   loadingScreen.showError('Your browser or device could not start 3D graphics (WebGL).');
   throw err;
+}
+
+if (import.meta.env.DEV) {
+  const catalogProblems = validateCatalog();
+  if (catalogProblems.length > 0) {
+    console.error('[catalog] Problems found:', catalogProblems);
+  }
 }
 
 const input = new Input(engine.renderer.domElement);
