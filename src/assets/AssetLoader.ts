@@ -94,7 +94,11 @@ export class AssetLoader {
   /** Loads one asset. Resolves true if the real model is ready, false otherwise. */
   load(id: string): Promise<boolean> {
     const entry = this.getEntry(id);
-    if (this.statuses.get(id) === 'loaded') return Promise.resolve(true);
+    const status = this.statuses.get(id);
+    if (status === 'loaded') return Promise.resolve(true);
+    // Remember failures so a missing file is not requested again on every call.
+    // Use retryFailed() after adding a file.
+    if (status === 'missing' || status === 'error') return Promise.resolve(false);
 
     const existing = this.pending.get(id);
     if (existing) return existing;
@@ -104,6 +108,13 @@ export class AssetLoader {
     });
     this.pending.set(id, promise);
     return promise;
+  }
+
+  /** Forgets missing/error results so the next load() checks again (e.g. after adding a file). */
+  retryFailed(): void {
+    for (const [id, status] of [...this.statuses.entries()]) {
+      if (status === 'missing' || status === 'error') this.statuses.delete(id);
+    }
   }
 
   /**
