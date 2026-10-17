@@ -1,0 +1,86 @@
+// firebase/firestore.rules
+//
+// Firestore Security Rules for NEON RIFT.
+// Default: everything is denied. Only the collections below are reachable.
+//
+// IMPORTANT: STARTERS and the starting coins/rating below must match
+// STARTER_CHARACTER_IDS (src/characters/catalog.ts) and STARTING_COINS /
+// STARTING_RATING (src/net/firestore.ts). If you change one, change the other.
+//
+// Coins, rating and owned characters can NOT be changed by the player. Later phases
+// (economy, ranks) change them only from the trusted server (Firebase Admin SDK,
+// which is not subject to these rules).
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function starters() {
+      return ['kaito_storm', 'haru_wind', 'akari_flame', 'hana_blossom'];
+    }
+
+    function validName(name) {
+      return name is string
+        && name.matches('^[A-Za-z0-9_][A-Za-z0-9_ ]{1,14}[A-Za-z0-9_]$');
+    }
+
+    // Player ID -> owner. Created together with the profile, never changed or deleted
+    // by the client. The document id is the permanent unique Player ID.
+    match /playerIds/{playerId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && playerId.matches('^NR[0-9]{8}$')
+        && request.resource.data.keys().hasOnly(['uid', 'createdAt'])
+        && request.resource.data.keys().hasAll(['uid', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // Private player profile. Only the owner can read it.
+    match /profiles/{uid} {
+      allow read: if isOwner(uid);
+
+      // One-time creation with fixed starting values.
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly([
+             'uid', 'playerId', 'displayName', 'selectedCharacterId',
+             'ownedCharacterIds', 'coins', 'rating', 'createdAt'])
+        && request.resource.data.keys().hasAll([
+             'uid', 'playerId', 'displayName', 'selectedCharacterId',
+             'ownedCharacterIds', 'coins', 'rating', 'createdAt'])
+        && request.resource.data.uid == uid
+        && request.resource.data.playerId is string
+        && request.resource.data.playerId.matches('^NR[0-9]{8}$')
+        && getAfter(/databases/$(database)/documents/playerIds/$(request.resource.data.playerId)).data.uid == uid
+        && validName(request.resource.data.displayName)
+        && request.resource.data.selectedCharacterId in starters()
+        && request.resource.data.ownedCharacterIds == starters()
+        && request.resource.data.coins == 500
+        && request.resource.data.rating == 1000
+        && request.resource.data.createdAt == request.time;
+
+      // The player may only change the display name and the selected character
+      // (which must already be owned). Everything else is read-only for the client.
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['displayName', 'selectedCharacterId'])
+        && validName(request.resource.data.displayName)
+        && request.resource.data.selectedCharacterId in resource.data.ownedCharacterIds;
+
+      // Account deletion is handled by the trusted server (privacy phase).
+      allow delete: if false;
+    }
+  }
+}
