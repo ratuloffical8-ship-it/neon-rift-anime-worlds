@@ -5,12 +5,20 @@ import { createPlaceholderCharacter } from './characters/CharacterPreview';
 import { LocalOwnershipStore } from './characters/ownership';
 import { Engine } from './core/Engine';
 import { Input } from './core/Input';
+import { AuthFailure, AuthService } from './net/auth';
+import type { AuthUser } from './net/auth';
+import { isFirebaseConfigured } from './net/firebase';
+import { ProfileFailure, ProfileService } from './net/firestore';
+import type { PlayerProfile } from './net/firestore';
 import { PlayerController } from './player/PlayerController';
 import { ThirdPersonCamera } from './player/ThirdPersonCamera';
+import { AuthScreen } from './ui/AuthScreen';
 import { CharacterSelect } from './ui/CharacterSelect';
 import { Hud } from './ui/Hud';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { MobileControls } from './ui/MobileControls';
+import { OfflineNotice } from './ui/OfflineNotice';
+import { SetupScreen } from './ui/SetupScreen';
 import { buildFirstZone } from './world/Zone';
 
 const container = document.getElementById('app') as HTMLDivElement | null;
@@ -37,7 +45,6 @@ if (import.meta.env.DEV) {
 }
 
 const input = new Input(engine.renderer.domElement);
-const mobileControls = MobileControls.isTouchDevice() ? new MobileControls(input) : null;
 const { scene, camera } = engine;
 
 // Shadows: cover the whole first zone (only active on medium/high quality)
@@ -63,10 +70,19 @@ scene.add(player.object);
 
 const followCamera = new ThirdPersonCamera(camera);
 
-// Assets, ownership (TEMPORARY local store) and character UI
+// Assets and ownership (ownership is a TEMPORARY local store until Phase 10)
 const loader = new AssetLoader();
 loadingScreen.bind(loader);
 const ownership = new LocalOwnershipStore();
+
+// Session state
+let authService: AuthService | null = null;
+let profileService: ProfileService | null = null;
+let currentProfile: PlayerProfile | null = null;
+let inGame = false;
+let hud: Hud | null = null;
+let mobileControls: MobileControls | null = null;
+let stopAuthWatch: (() => void) | null = null;
 
 let applyToken = 0;
 
@@ -89,15 +105,117 @@ async function applySelectedCharacter(): Promise<void> {
 const characterSelect = new CharacterSelect({
   loader,
   ownership,
-  onSelected: () => {
+  onSelected: (characterId) => {
     void applySelectedCharacter();
+    if (profileService && currentProfile) {
+      profileService
+        .updateSelectedCharacter(currentProfile.uid, characterId)
+        .catch((err) => {
+          // Characters bought in this phase exist only locally, so the account cannot store them yet.
+          console.warn('[profile] Selected character was not saved to the account.', err);
+        });
+    }
   },
 });
 
-const hud = new Hud({
-  ownership,
-  onOpenCharacters: () => characterSelect.open(),
-});
+// ---- Sign-in flow ----
+
+/** Shows the login screen and resolves when the player signs in. */
+function signIn(auth: AuthService): Promise<AuthUser> {
+  return new Promise<AuthUser>((resolve) => {
+    const screen = new AuthScreen({ auth, onAuthenticated: resolve });
+    screen.show('login');
+  });
+}
+
+/** Shows first-time setup and resolves with the created profile. */
+function runSetup(profiles: ProfileService, uid: string): Promise<PlayerProfile> {
+  return new Promise<PlayerProfile>((resolve) => {
+    const screen = new SetupScreen({
+      onSubmit: async (displayName, characterId) => {
+        const profile = await profiles.createProfile(uid, displayName, characterId);
+        resolve(profile);
+      },
+    });
+    screen.show();
+  });
+}
+
+/** Shows the offline notice and resolves when the player chooses to continue. */
+function askOffline(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const notice = new OfflineNotice({ onContinue: resolve });
+    notice.show();
+  });
+}
+
+/**
+ * Works out who is playing. Returns the profile, or null in offline testing mode.
+ * The loading screen is hidden while a login/setup screen is shown.
+ */
+async function resolveSession(): Promise<PlayerProfile | null> {
+  if (!isFirebaseConfigured()) {
+    loadingScreen.hide();
+    await askOffline();
+    return null;
+  }
+
+  const auth = new AuthService();
+  authService = auth;
+
+  loadingScreen.setMessage('Checking your account...');
+  let user = await auth.waitForInitialState();
+  if (!user) {
+    loadingScreen.hide();
+    user = await signIn(auth);
+    loadingScreen.show();
+  }
+
+  loadingScreen.setMessage('Loading your profile...');
+  const profiles = new ProfileService();
+  profileService = profiles;
+
+  let profile = await profiles.getProfile(user.uid);
+  if (!profile) {
+    loadingScreen.hide();
+    profile = await runSetup(profiles, user.uid);
+    loadingScreen.show();
+  }
+  return profile;
+}
+
+async function logout(): Promise<void> {
+  try {
+    await authService?.logout();
+  } catch (err) {
+    console.error('[auth] Log out failed', err);
+  }
+  window.location.reload();
+}
+
+function enterGame(): void {
+  inGame = true;
+
+  if (MobileControls.isTouchDevice()) {
+    mobileControls = new MobileControls(input);
+  }
+
+  hud = new Hud({
+    ownership,
+    onOpenCharacters: () => characterSelect.open(),
+    onLogout: authService ? () => void logout() : undefined,
+    identity: currentProfile
+      ? { displayName: currentProfile.displayName, playerId: currentProfile.playerId }
+      : null,
+  });
+
+  // If the session ends (for example logged out in another tab), start again from the login screen.
+  if (authService) {
+    stopAuthWatch = authService.onAuthChanged((user) => {
+      if (!user && inGame) window.location.reload();
+    });
+  }
+}
 
 engine.onUpdate((dt) => {
   zone.update(dt);
@@ -123,6 +241,16 @@ engine.onUpdate((dt) => {
 });
 
 async function start(): Promise<void> {
+  currentProfile = await resolveSession();
+
+  loadingScreen.show();
+  loadingScreen.setMessage('Loading...');
+
+  // Use the character saved in the account (starters are always owned locally).
+  if (currentProfile) {
+    await ownership.select(currentProfile.selectedCharacterId);
+  }
+
   const selected = getCharacter(ownership.getSelectedId());
   await loader.preload([selected.modelAssetId]);
   await applySelectedCharacter();
@@ -132,18 +260,26 @@ async function start(): Promise<void> {
     console.info(`[assets] Using temporary models for: ${missing.join(', ')}`);
   }
 
+  enterGame();
   engine.start();
   loadingScreen.hide();
 }
 
 start().catch((err) => {
   console.error(err);
-  loadingScreen.showError('Something went wrong while loading the game.');
+  loadingScreen.show();
+  const reason =
+    err instanceof AuthFailure || err instanceof ProfileFailure
+      ? err.message
+      : 'Something went wrong while loading the game.';
+  loadingScreen.showError(`${reason} Reload the page to try again.`);
 });
 
 window.addEventListener('beforeunload', () => {
+  inGame = false;
+  stopAuthWatch?.();
   characterSelect.dispose();
-  hud.dispose();
+  hud?.dispose();
   mobileControls?.dispose();
   input.dispose();
   loader.dispose();
